@@ -16,7 +16,7 @@ defmodule Poker.Application do
       # {Poker.Worker, arg},
       # Start to serve requests, typically the last entry
       PokerWeb.Endpoint
-    ]
+    ] ++ workers()
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -31,4 +31,16 @@ defmodule Poker.Application do
     PokerWeb.Endpoint.config_change(changed, removed)
     :ok
   end
+
+
+defp workers do
+  if Mix.env() == :test do
+    []   # ← en test, on ne démarre pas les GenServers
+  else
+    [
+      Poker.Players.Registry,
+      Poker.Game.Server
+    ]
+  end
+end
 end

@@ -3,6 +3,8 @@ defmodule PokerWeb.NfcController do
 
    alias Poker.Players.Registry
 
+
+  @gm_tag_id System.get_env("GM_TAG_ID", "gm-master")
   # ---------------------------------------------------------------------------
   # GET /nfc/:tag_id
   # Point d'entrée unique pour tous les scans NFC

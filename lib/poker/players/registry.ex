@@ -1,7 +1,6 @@
 defmodule Poker.Players.Registry do
   use GenServer
   alias Poker.{Repo, Players.Player}
-  import Ecto.Query
 
   # ---------------------------------------------------------------------------
   # API publique
@@ -45,6 +44,11 @@ defmodule Poker.Players.Registry do
     players = Repo.all(Player) # Variable utilisée une seule fois
     state = Map.new(players, fn p -> {p.tag_id, p} end) # Variable
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:all, _from, state) do
+    {:reply, Map.values(state), state}
   end
 
   @doc """
