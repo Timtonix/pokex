@@ -2,7 +2,7 @@ defmodule Poker.Game.Server do
   use GenServer
 
   defstruct [
-  phase: :waiting,
+  phase: :waiting, # :pre_flop, :flop, :turn, :river, :showdown
   players: [],              # ordre des joueurs à la table
   dealer_index: 0,          # position du dealer, tourne à chaque main
   active_player: nil,       # tag_id dont c'est le tour
@@ -24,6 +24,7 @@ defmodule Poker.Game.Server do
     GenServer.start_link(__MODULE__, %__MODULE__{}, name: __MODULE__)
   end
 
+  @spec state() :: any()
   @doc "Renvoie le state de la partie"
   def state() do
     GenServer.call(__MODULE__, :state)
@@ -98,10 +99,9 @@ defmodule Poker.Game.Server do
   @impl true
   def handle_call({:fold, tag_id}, _from, state) do
     # vérifier si c'est son tour
-    if Enum.at(state.players, state.hand_number) == tag_id do
+    if state.active_player == tag_id do
       {:reply, {:ok, :folded}, %{state |
       folded: state.folded ++ [tag_id],
-      players: state.players -- [tag_id],
       hand_number: state.hand_number + 1
        }}
     end

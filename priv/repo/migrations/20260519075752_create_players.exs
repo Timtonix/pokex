@@ -6,11 +6,12 @@ defmodule Poker.Repo.Migrations.CreatePlayers do
       add :tag_id, :string, null: false
       add :name, :string, null: false
       add :bankroll, :integer, null: false
+      add :gm, :boolean, default: false
       add :status,   :string, default: "active"
       timestamps()
     end
 
     create unique_index(:players, [:tag_id])
-  
+
   end
 end

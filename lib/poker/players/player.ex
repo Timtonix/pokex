@@ -6,13 +6,14 @@ defmodule Poker.Players.Player do
     field :tag_id,   :string
     field :name,     :string
     field :bankroll, :integer
+    field :gm, :boolean, default: false
     field :status,   :string, default: "active"
     timestamps()
   end
 
   def changeset(player, attrs) do
     player
-    |> cast(attrs, [:tag_id, :name, :bankroll, :status])
+    |> cast(attrs, [:tag_id, :name, :bankroll, :gm, :status])
     |> validate_required([:tag_id, :name, :bankroll])
     |> validate_number(:bankroll, greater_than_or_equal_to: 0)
     |> unique_constraint(:tag_id)
