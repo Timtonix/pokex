@@ -12,7 +12,7 @@ defmodule Poker.TableManagerTest do
   defp player_ids, do: ["TAG-P-002", "TAG-P-003", "TAG-P-004"]
 
   defp create_table do
-    TableManager.create_table(gm_id(), "Alice")
+    TableManager.create_table(gm_id())
   end
 
   defp table_with_players(count \\ 2) do

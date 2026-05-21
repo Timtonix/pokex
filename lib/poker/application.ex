@@ -35,11 +35,13 @@ defmodule Poker.Application do
 
 defp workers do
   if Mix.env() == :test do
-    []   # ← en test, on ne démarre pas les GenServers
+    [
+
+    ]   # ← en test, on ne démarre pas les GenServers
   else
     [
-      Poker.Players.Registry,
-      Poker.Game.Server
+      Poker.Players.Registry
+
     ]
   end
 end

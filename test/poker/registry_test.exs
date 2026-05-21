@@ -1,9 +1,9 @@
 defmodule RegistryTest do
-use Poker.DataCase, async: false
+  use Poker.DataCase, async: false
 
   alias Poker.Players.Registry
 
-  def setup do
+  setup do
     start_supervised!({Registry, []})
     Ecto.Adapters.SQL.Sandbox.allow(Poker.Repo, self(), Registry)
 
@@ -15,8 +15,19 @@ use Poker.DataCase, async: false
   # ----------------------------
 
   describe "Ajout de joueurs qui n'existent pas dans la base" do
-    def test "Scannage de tag qui n'est pas dans la base" do
-      Registry.register("azertycaca", "Timtonix", 10000)
+    test "registers a missing player and stores it in the registry" do
+      assert {:ok, player} = Registry.register("tag-123", "Alice", 10000)
+      assert player.tag_id == "tag-123"
+      assert player.name == "Alice"
+      assert player.bankroll == 10000
+
+      assert Registry.lookup("tag-123") == player
+      assert Enum.any?(Registry.all(), fn p -> p.tag_id == "tag-123" end)
+    end
+
+    test "returns error when registering an already registered tag" do
+      assert {:ok, _player} = Registry.register("tag-1234", "Alice", 10000)
+      assert {:error, :already_registered} = Registry.register("tag-1234", "Bob", 5000)
     end
   end
 
