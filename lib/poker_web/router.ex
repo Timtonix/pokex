@@ -19,11 +19,11 @@ defmodule PokerWeb.Router do
 
     get "/", PageController, :home
 
-        # Page d'enregistrement d'un nouveau joueur
-    live "/players/new", PlayerLive.New
+    live "/scan", ScanLive
+    live "/table", TableLive
+
 
     # Vue table (lecture seule, tous les joueurs)
-    live "/table", TableLive
 
     # Interface Game Master (protégée par le scan du tag GM)
     live "/gm", GmLive

@@ -9,7 +9,7 @@ defmodule Poker.Players.Registry do
   def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
   @doc "Enregistre un nouveau joueur avec son tag NFC"
-  def register(tag_id, name, bankroll) do
+  def register(tag_id, name, bankroll \\ 10000) do
     GenServer.call(__MODULE__, {:register, tag_id, name, bankroll})
   end
 
@@ -48,7 +48,7 @@ defmodule Poker.Players.Registry do
 
   @impl true
   def handle_call(:all, _from, state) do
-    {:reply, Map.values(state), state}
+    {:reply, {:ok, Map.values(state)}, state}
   end
 
   @doc """
@@ -84,7 +84,11 @@ defmodule Poker.Players.Registry do
 
   @impl true
   def handle_call({:lookup, tag_id}, _from, state) do
-    {:reply, Map.get(state, tag_id), state}
+    case Map.get(state, tag_id) do
+      nil -> {:reply, {:error, :not_found}, state}
+      player -> {:reply, {:ok, player}, state}
+    end
+
   end
 
   # Écriture : mémoire + SQLite

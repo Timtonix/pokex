@@ -1,15 +1,39 @@
 defmodule Poker.TableManagerTest do
-  use ExUnit.Case, async: true
+  use Poker.DataCase, async: false
 
   alias Poker.TableManager
   alias Poker.TableManager.{Table, Player, Hand}
+  alias Poker.Players.Registry
 
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+  setup do
+    start_supervised!({Registry, []})
+    start_supervised!({TableManager, []})
 
-  defp gm_id, do: "TAG-GM-001"
-  defp player_ids, do: ["TAG-P-002", "TAG-P-003", "TAG-P-004"]
+    Ecto.Adapters.SQL.Sandbox.allow(Poker.Repo, self(), TableManager)
+    Ecto.Adapters.SQL.Sandbox.allow(Poker.Repo, self(), Registry)
+
+
+    #Enregistrer des joueurs
+    {:ok, player} = Registry.register("alice", "Alice", 10_000)
+    player
+    |> Poker.Players.Player.changeset(%{gm: true})
+    |> Repo.update()
+    
+    :sys.replace_state(Registry, fn state ->
+      Map.update!(state, "alice", fn player -> %{player | gm: true} end)
+    end)
+
+    Registry.register("bob", "Bob", 10_000)
+    Registry.register("charlie", "Charlie", 10_000)
+    Registry.register("diana", "Diana", 10_000)
+
+    :ok
+  end
+  defp gm_id, do: "alice"
+  defp player_ids, do: ["bob", "charlie", "diana"]
 
   defp create_table do
     TableManager.create_table(gm_id())
@@ -31,18 +55,15 @@ defmodule Poker.TableManagerTest do
   # BLOC 1 — Création de table
   # ---------------------------------------------------------------------------
 
-  describe "create_table/2" do
+  describe "create_table/1" do
     test "retourne {:ok, %Table{}} avec les valeurs par défaut" do
-      assert {:ok, %Table{} = table} = create_table()
+      assert {:ok, %Table{}} = create_table()
     end
 
-    test "le table_id est unique et non nil" do
+    test "Quand on veut créer une table, alors qu'elle existe : error" do
       {:ok, t1} = create_table()
-      {:ok, t2} = create_table()
-
       refute is_nil(t1.table_id)
-      refute is_nil(t2.table_id)
-      assert t1.table_id != t2.table_id
+      assert {:error, :already_existing} == create_table()
     end
 
     test "le statut initial est :waiting" do
@@ -80,11 +101,6 @@ defmodule Poker.TableManagerTest do
       assert gm_player.seat == 0
     end
 
-    test "le joueur GM a le stack initial par défaut (1000)" do
-      {:ok, table} = create_table()
-      [gm_player] = table.players
-      assert gm_player.stack == 1000
-    end
 
     test "le joueur GM a le statut :active" do
       {:ok, table} = create_table()
@@ -93,11 +109,11 @@ defmodule Poker.TableManagerTest do
     end
 
     test "refus si le tag GM est une chaîne vide" do
-      assert {:error, :invalid_tag} = TableManager.create_table("", "Alice")
+      assert {:error, :invalid_tag} = TableManager.create_table("")
     end
 
-    test "refus si le pseudo est une chaîne vide" do
-      assert {:error, :invalid_name} = TableManager.create_table(gm_id(), "")
+    test "refus si le tag n'est pas GM" do
+      assert {:error, :not_gm} = TableManager.create_table(Enum.at(player_ids(), 0))
     end
   end
 

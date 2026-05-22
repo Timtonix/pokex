@@ -108,6 +108,11 @@ defmodule Poker.TableManager do
   alias Poker.Players.Registry
 
 
+
+
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
   @doc """
   crée une nouvelle table.
 
@@ -126,14 +131,14 @@ defmodule Poker.TableManager do
       iex> TableManager.create_table("TAG-GM-001")
       {:ok, %TableManager{...}}
   """
-  @spec create_table(String.t()) :: {:ok, pid()} | {:error, :invalid_tag}
+  @spec create_table(String.t()) :: {:ok, struct()} | {:error, :invalid_tag} | {:error, :already_existing}
   def create_table(gm_id) when is_binary(gm_id)do
     cond do
       String.trim(gm_id) == "" ->
         {:error, :invalid_tag}
 
       true ->
-        GenServer.start_link(__MODULE__, gm_id, [])
+        GenServer.call(__MODULE__, {:create_table, gm_id})
     end
   end
 
@@ -149,7 +154,6 @@ defmodule Poker.TableManager do
   Le stack initial est lu depuis `bankroll` dans Registry.
 
   ## Paramètres
-  - `pid` — PID du GenServer de la table
   - `tag_id` — String, tag NFC du joueur
 
   ## Retours
@@ -163,8 +167,9 @@ defmodule Poker.TableManager do
       iex> TableManager.join_table(pid, "TAG-P-002")
       {:ok, %Table{players: [%Player{id: "TAG-GM-001", seat: 0}, %Player{id: "TAG-P-002", seat: 1}], ...}}
   """
-  def join_table(pid, tag_id), do: GenServer.call(pid, {:join, tag_id})
+  def join_table(tag_id), do: GenServer.call(__MODULE__, {:join, tag_id})
 
+  @spec get_state(atom() | pid() | {atom(), any()} | {:via, atom(), any()}) :: any()
   @doc """
   Retourne l'état complet de la table.
 
@@ -181,7 +186,7 @@ defmodule Poker.TableManager do
       iex> TableManager.get_state(pid)
       %Table{status: :waiting, players: [...], hand: nil, ...}
   """
-  def get_state(pid), do: GenServer.call(pid, :get_state)
+  def get_state(pid), do: GenServer.call(__MODULE__, :get_state)
 
   @doc """
   Démarre la partie.
@@ -254,13 +259,23 @@ defmodule Poker.TableManager do
 
   # --------------------CALLBACK--------------------------
 
-    @impl true
-  def init(gm_id) do
-    case Registry.lookup(gm_id) do
-      nil ->
-        {:error, :unknown_tag}
+  @impl true
+  def init(_opts) do
+    {:ok, nil}
+  end
 
-      player ->
+
+  def handle_call({:create_table, _gm_id}, _from, %Table{} = state) do
+    {:reply, {:error, :already_existing}, state}
+  end
+
+  @impl true
+  def handle_call({:create_table, gm_id}, _from, state) do
+    case Registry.lookup(gm_id) do
+      {:error, :not_found} ->
+        {:reply, {:error, :unknown_tag}, state}
+
+      {:ok, %Poker.Players.Player{gm: true} = player} ->
         table = %Table{
         table_id: Ecto.UUID.generate(),
         gm_id: gm_id,
@@ -274,8 +289,14 @@ defmodule Poker.TableManager do
           ]
         }
 
-        {:ok, table}
+        {:reply, {:ok, table}, table}
+      {:ok, %Poker.Players.Player{gm: false}} ->
+        {:reply, {:error, :not_gm}, state}
     end
+  end
 
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, state, state}
   end
 end
