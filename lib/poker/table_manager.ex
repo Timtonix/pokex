@@ -13,9 +13,6 @@ defmodule Poker.TableManager do
       :waiting  → les joueurs scannent leur tag et rejoignent
       :playing  → une partie est en cours, `hand` est non-nil
     """
-
-    @max_players 6
-
     defstruct [
       :table_id,         # String UUID — identifiant unique de la table
       :gm_id,            # String — tag NFC du joueur ayant le rôle GM
@@ -25,7 +22,7 @@ defmodule Poker.TableManager do
       dealer_seat: 0     # Integer — index dans `players` du dealer actuel
     ]
 
-    def max_players, do: @max_players
+    def max_players(), do:  6
   end
 
   # ---------------------------------------------------------------------------
@@ -41,28 +38,28 @@ defmodule Poker.TableManager do
   #     bankroll INTEGER NOT NULL DEFAULT 1000
   #   );
   #
-  # Le `stack` ici EST la bankroll : toute action de jeu (blind, mise, gain)
+  # Le `bankroll` ici EST la bankroll : toute action de jeu (blind, mise, gain)
   # doit déclencher un UPDATE players SET bankroll = ? WHERE id = ?
   # ---------------------------------------------------------------------------
   defmodule Player do
     @moduledoc """
     Représente un joueur à la table.
 
-    `stack` est synchronisé en temps réel avec `bankroll` dans SQLite.
+    `bankroll` est synchronisé en temps réel avec `bankroll` dans SQLite.
     La source de vérité en cours de partie est le GenServer ;
-    SQLite est mis à jour à chaque changement de stack via Poker.Repo.
+    SQLite est mis à jour à chaque changement de bankroll via Poker.Repo.
 
     Transitions de `status` :
       :active  → joue normalement
       :folded  → s'est couché sur la main en cours (redevient :active à la prochaine)
-      :all_in  → a misé tout son stack, ne peut plus agir
-      :out     → éliminé (stack == 0), ne participe plus aux mains
+      :all_in  → a misé tout son bankroll, ne peut plus agir
+      :out     → éliminé (bankroll == 0), ne participe plus aux mains
     """
 
     defstruct [
       :id,               # String — tag NFC, clé primaire SQLite
       :name,             # String — pseudo (lu depuis SQLite à la connexion)
-      :stack,            # Integer — bankroll en cours (= SQLite players.bankroll)
+      :bankroll,            # Integer — bankroll en cours (= SQLite players.bankroll)
       :seat,             # Integer 0..5 — position à la table, attribué à l'arrivée
       status: :active    # :active | :folded | :all_in | :out
     ]
@@ -71,7 +68,7 @@ defmodule Poker.TableManager do
   # ---------------------------------------------------------------------------
   # Struct : Hand
   # Une main de poker. Créée à chaque "Nouvelle main", détruite après l'abattage.
-  # Pas de persistance — les résultats sont répercutés sur Player.stack (→ SQLite).
+  # Pas de persistance — les résultats sont répercutés sur Player.bankroll (→ SQLite).
   # ---------------------------------------------------------------------------
   defmodule Hand do
     @moduledoc """
@@ -105,6 +102,7 @@ defmodule Poker.TableManager do
   # API publique — documentation des fonctions à implémenter
   # ---------------------------------------------------------------------------
   use GenServer
+  alias Poker.TableManager
   alias Poker.Players.Registry
 
 
@@ -151,7 +149,7 @@ defmodule Poker.TableManager do
   La table doit être en statut `:waiting`.
   Vérifie via `Registry.get_player/1` que le tag est connu.
   Le joueur reçoit le prochain seat disponible (dans l'ordre d'appel).
-  Le stack initial est lu depuis `bankroll` dans Registry.
+  Le bankroll initial est lu depuis `bankroll` dans Registry.
 
   ## Paramètres
   - `tag_id` — String, tag NFC du joueur
@@ -169,7 +167,7 @@ defmodule Poker.TableManager do
   """
   def join_table(tag_id), do: GenServer.call(__MODULE__, {:join, tag_id})
 
-  @spec get_state(atom() | pid() | {atom(), any()} | {:via, atom(), any()}) :: any()
+  @spec get_state() :: any()
   @doc """
   Retourne l'état complet de la table.
 
@@ -186,7 +184,7 @@ defmodule Poker.TableManager do
       iex> TableManager.get_state(pid)
       %Table{status: :waiting, players: [...], hand: nil, ...}
   """
-  def get_state(pid), do: GenServer.call(__MODULE__, :get_state)
+  def get_state(), do: GenServer.call(__MODULE__, :get_state)
 
   @doc """
   Démarre la partie.
@@ -210,14 +208,14 @@ defmodule Poker.TableManager do
       iex> TableManager.start_game(pid, "TAG-GM-001")
       {:ok, %Table{status: :playing, ...}}
   """
-  def start_game(pid, caller_tag), do: GenServer.call(pid, {:start_game, caller_tag})
+  def start_game(caller_tag), do: GenServer.call(__MODULE__, {:start_game, caller_tag})
 
   @doc """
   Réinitialise la table à son état initial.
 
   Seul le GM peut appeler cette fonction.
   Remet `status: :waiting`, vide `players` et `hand`.
-  Ne touche pas aux bankrolls (les stacks sont déjà synchronisés
+  Ne touche pas aux bankrolls (les bankrolls sont déjà synchronisés
   au fil de la partie via `Bankroll.update/2`).
   Diffuse `{:table_updated, %Table{}}` à tous les abonnés PubSub.
 
@@ -283,7 +281,7 @@ defmodule Poker.TableManager do
           %Player{
             id: gm_id,
             name: player.name,
-            stack: player.bankroll,
+            bankroll: player.bankroll,
             seat: 0
             }
           ]
@@ -298,5 +296,55 @@ defmodule Poker.TableManager do
   @impl true
   def handle_call(:get_state, _from, state) do
     {:reply, state, state}
+  end
+
+  @impl true
+  def handle_call({:join, tag_id}, _from, state) do
+    #est-ce que le joueur est déjà enregistré ?
+    cond do
+      Enum.find(state.players, &(&1.id == tag_id)) != nil ->
+        {:reply, {:error, :player_already_registered}, state}
+
+      length(state.players) >= Table.max_players() ->
+        {:reply, {:error, :table_full}, state}
+
+      state.status == :playing ->
+        {:reply, {:error, :game_already_started}, state}
+      true ->
+        case Registry.lookup(tag_id) do
+          {:error, :not_found} ->
+            {:reply, {:error, :unknown_tag}, state}
+
+          {:ok, player} ->
+
+            players = state.players ++ [
+              %Player{
+              id: tag_id,
+              name: player.name,
+              bankroll: player.bankroll,
+              seat: length(state.players)
+              }]
+
+            table = %Table{state | players: players}
+            {:reply, {:ok, table}, table}
+        end
+    end
+  end
+
+  @impl true
+  def handle_call({:start_game, caller_id}, _from, state) do
+    cond do
+      length(state.players) < 2 ->
+        {:reply, {:error, :not_enough_players}, state}
+      state.status == :playing ->
+        {:reply, {:error, :game_already_started}, state}
+
+      state.gm_id == caller_id ->
+        table = %Table{state | status: :playing}
+        {:reply, {:ok, table}, table}
+
+      state.gm_id != caller_id ->
+        {:reply, {:error, :not_gm}, state}
+    end
   end
 end
