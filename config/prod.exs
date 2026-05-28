@@ -7,17 +7,18 @@ import Config
 # before starting your production server.
 config :poker, PokerWeb.Endpoint, cache_static_manifest: "priv/static/cache_manifest.json"
 
-# Force using SSL in production. This also sets the "strict-security-transport" header,
-# known as HSTS. If you have a health check endpoint, you may want to exclude it below.
-# Note `:force_ssl` is required to be set at compile-time.
-config :poker, PokerWeb.Endpoint,
-  force_ssl: [
-    rewrite_on: [:x_forwarded_proto],
-    exclude: [
-      # paths: ["/health"],
-      hosts: ["localhost", "127.0.0.1"]
+# force_ssl only applies to cloud/host deployments.
+# On Nerves the Pi serves plain HTTP on its private WiFi hotspot.
+if Mix.target() == :host do
+  config :poker, PokerWeb.Endpoint,
+    force_ssl: [
+      rewrite_on: [:x_forwarded_proto],
+      exclude: [
+        # paths: ["/health"],
+        hosts: ["localhost", "127.0.0.1"]
+      ]
     ]
-  ]
+end
 
 # Do not print debug messages in production
 config :logger, level: :info

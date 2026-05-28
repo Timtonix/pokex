@@ -21,8 +21,9 @@ defmodule RegistryTest do
       assert player.name == "Alice"
       assert player.bankroll == 10000
 
-      assert Registry.lookup("tag-123") == player
-      assert Enum.any?(Registry.all(), fn p -> p.tag_id == "tag-123" end)
+      assert {:ok, ^player} = Registry.lookup("tag-123")
+      {:ok, all_players} = Registry.all()
+      assert Enum.any?(all_players, fn p -> p.tag_id == "tag-123" end)
     end
 
     test "returns error when registering an already registered tag" do
@@ -30,5 +31,4 @@ defmodule RegistryTest do
       assert {:error, :already_registered} = Registry.register("tag-1234", "Bob", 5000)
     end
   end
-
 end

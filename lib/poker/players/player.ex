@@ -3,11 +3,11 @@ defmodule Poker.Players.Player do
   import Ecto.Changeset
 
   schema "players" do
-    field :tag_id,   :string
-    field :name,     :string
+    field :tag_id, :string
+    field :name, :string
     field :bankroll, :integer
     field :gm, :boolean, default: false
-    field :status,   :string, default: "active"
+    field :status, :string, default: "active"
     timestamps()
   end
 

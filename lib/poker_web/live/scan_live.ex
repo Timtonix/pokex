@@ -65,7 +65,7 @@ defmodule PokerWeb.ScanLive do
     do: {:error, :name_too_long}
 
   defp validate_and_register(tag_id, name) do
-    Registry.register_player(tag_id, name)
+    Registry.register(tag_id, name)
   end
 
   # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ defmodule PokerWeb.ScanLive do
       </div>
 
       <%= if @error do %>
-        <p class="text-red-400 text-sm text-center"><%= @error %></p>
+        <p class="text-red-400 text-sm text-center">{@error}</p>
       <% end %>
 
       <.form for={@form} phx-submit="register" class="space-y-4">
@@ -130,7 +130,7 @@ defmodule PokerWeb.ScanLive do
         </button>
       </.form>
 
-      <p class="text-zinc-600 text-xs text-center">Tag : <%= @tag_id %></p>
+      <p class="text-zinc-600 text-xs text-center">Tag : {@tag_id}</p>
     </div>
     """
   end

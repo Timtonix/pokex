@@ -1,0 +1,4 @@
+## Customize flags given to the VM: http://erlang.org/doc/man/erl.html
+## -mode/-name/-sname/-setcookie are configured via env.sh.eex
+
+-kernel shell_history enabled

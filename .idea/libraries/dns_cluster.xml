@@ -2,7 +2,9 @@
   <library name="dns_cluster" type="mix">
     <CLASSES>
       <root url="file://$PROJECT_DIR$/_build/dev/lib/dns_cluster/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/dns_cluster/ebin" />
       <root url="file://$PROJECT_DIR$/_build/dev/lib/dns_cluster/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/dns_cluster/ebin" />
     </CLASSES>
     <JAVADOC />
     <SOURCES>

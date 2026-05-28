@@ -33,16 +33,21 @@ defmodule Poker.Players.Registry do
     GenServer.call(__MODULE__, {:set_status, tag_id, status})
   end
 
+  def make_gm(tag_id) do
+    GenServer.call(__MODULE__, {:make_gm, tag_id})
+  end
+
   # ---------------------------------------------------------------------------
   # Callbacks GenServer
   # ---------------------------------------------------------------------------
 
-
   # Démarrage : charge tout depuis SQLite en mémoire
   @impl true
   def init(_) do
-    players = Repo.all(Player) # Variable utilisée une seule fois
-    state = Map.new(players, fn p -> {p.tag_id, p} end) # Variable
+    # Variable utilisée une seule fois
+    players = Repo.all(Player)
+    # Variable
+    state = Map.new(players, fn p -> {p.tag_id, p} end)
     {:ok, state}
   end
 
@@ -62,11 +67,12 @@ defmodule Poker.Players.Registry do
   def handle_call({:register, tag_id, name, bankroll}, _from, state) do
     case Map.get(state, tag_id) do
       nil ->
-        changeset = Player.changeset(%Player{}, %{
-          tag_id: tag_id,
-          name: name,
-          bankroll: bankroll
-        })
+        changeset =
+          Player.changeset(%Player{}, %{
+            tag_id: tag_id,
+            name: name,
+            bankroll: bankroll
+          })
 
         case Repo.insert(changeset) do
           {:ok, player} ->
@@ -76,11 +82,10 @@ defmodule Poker.Players.Registry do
             {:reply, {:error, changeset}, state}
         end
 
-        _existing -> {:reply, {:error, :already_registered}, state}
-
+      _existing ->
+        {:reply, {:error, :already_registered}, state}
     end
   end
-
 
   @impl true
   def handle_call({:lookup, tag_id}, _from, state) do
@@ -88,7 +93,6 @@ defmodule Poker.Players.Registry do
       nil -> {:reply, {:error, :not_found}, state}
       player -> {:reply, {:ok, player}, state}
     end
-
   end
 
   # Écriture : mémoire + SQLite
@@ -113,7 +117,6 @@ defmodule Poker.Players.Registry do
           end
         end
     end
-
   end
 
   @impl true
@@ -130,6 +133,22 @@ defmodule Poker.Players.Registry do
           {:error, changeset} ->
             {:reply, {:error, changeset}, state}
         end
-      end
+    end
+  end
+
+  def handle_call({:make_gm, tag_id}, _from, state) do
+    case Map.get(state, tag_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      player ->
+        case Player.changeset(player, %{gm: true}) |> Repo.update() do
+          {:ok, updated} ->
+            {:reply, {:ok, updated}, Map.put(state, tag_id, updated)}
+
+          {:error, changeset} ->
+            {:reply, {:error, changeset}, state}
+        end
+    end
   end
 end

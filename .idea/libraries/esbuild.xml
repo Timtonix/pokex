@@ -2,7 +2,9 @@
   <library name="esbuild" type="mix">
     <CLASSES>
       <root url="file://$PROJECT_DIR$/_build/dev/lib/esbuild/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/esbuild/ebin" />
       <root url="file://$PROJECT_DIR$/_build/dev/lib/esbuild/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/esbuild/ebin" />
     </CLASSES>
     <JAVADOC />
     <SOURCES>

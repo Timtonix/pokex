@@ -2,7 +2,9 @@
   <library name="tailwind" type="mix">
     <CLASSES>
       <root url="file://$PROJECT_DIR$/_build/dev/lib/tailwind/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/tailwind/ebin" />
       <root url="file://$PROJECT_DIR$/_build/dev/lib/tailwind/ebin" />
+      <root url="file://$PROJECT_DIR$/_build/test/lib/tailwind/ebin" />
     </CLASSES>
     <JAVADOC />
     <SOURCES>

@@ -7,6 +7,19 @@
 # General application configuration
 import Config
 
+# Enable the Nerves integration with Mix
+Application.start(:nerves_bootstrap)
+
+# Customize non-Elixir parts of the firmware. See
+# https://hexdocs.pm/nerves/advanced-configuration.html for details.
+
+config :nerves, :firmware, rootfs_overlay: "rootfs_overlay"
+
+# Set the SOURCE_DATE_EPOCH date for reproducible builds.
+# See https://reproducible-builds.org/docs/source-date-epoch/ for more information
+
+config :nerves, source_date_epoch: "1779822776"
+
 config :poker,
   ecto_repos: [Poker.Repo],
   generators: [timestamp_type: :utc_datetime]
@@ -54,3 +67,7 @@ config :phoenix, :json_library, Jason
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"
+
+if Mix.target() != :host do
+  import_config "target.exs"
+end

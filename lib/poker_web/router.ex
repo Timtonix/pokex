@@ -21,21 +21,7 @@ defmodule PokerWeb.Router do
 
     live "/scan", ScanLive
     live "/table", TableLive
-
-
-    # Vue table (lecture seule, tous les joueurs)
-
-    # Interface Game Master (protégée par le scan du tag GM)
-    live "/gm", GmLive
-
   end
-
-  scope "/nfc", PokerWeb do
-    pipe_through :browser
-
-    get "/:tag_id", NfcController, :handle
-  end
-
 
   # Other scopes may use custom stacks.
   # scope "/api", PokerWeb do

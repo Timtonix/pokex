@@ -1,5 +1,4 @@
 defmodule Poker.TableManager do
-
   # ---------------------------------------------------------------------------
   # Struct : Table
   # État complet d'une table de jeu. Vit uniquement en mémoire (GenServer).
@@ -14,15 +13,23 @@ defmodule Poker.TableManager do
       :playing  → une partie est en cours, `hand` est non-nil
     """
     defstruct [
-      :table_id,         # String UUID — identifiant unique de la table
-      :gm_id,            # String — tag NFC du joueur ayant le rôle GM
-      players: [],       # [%Player{}] dans l'ordre de scan (= ordre des seats)
-      status: :waiting,  # :waiting | :playing
-      hand: nil,         # %Hand{} | nil
-      dealer_seat: 0     # Integer — index dans `players` du dealer actuel
+      # String UUID — identifiant unique de la table
+      :table_id,
+      # String — tag NFC du joueur ayant le rôle GM
+      :gm_id,
+      # [%Player{}] dans l'ordre de scan (= ordre des seats)
+      players: [],
+      # :waiting | :playing
+      status: :waiting,
+      # %Hand{} | nil
+      hand: nil,
+      # Integer — index dans `players` du dealer actuel (-1 = pas encore joué)
+      dealer_seat: -1,
+      small_blind: 10,
+      big_blind: 20
     ]
 
-    def max_players(), do:  6
+    def max_players(), do: 6
   end
 
   # ---------------------------------------------------------------------------
@@ -57,11 +64,14 @@ defmodule Poker.TableManager do
     """
 
     defstruct [
-      :id,               # String — tag NFC, clé primaire SQLite
-      :name,             # String — pseudo (lu depuis SQLite à la connexion)
-      :bankroll,            # Integer — bankroll en cours (= SQLite players.bankroll)
-      :seat,             # Integer 0..5 — position à la table, attribué à l'arrivée
-      status: :active    # :active | :folded | :all_in | :out
+      # String — tag NFC, clé primaire SQLite
+      :id,
+      # String — pseudo (lu depuis SQLite à la connexion)
+      :name,
+      # Integer — bankroll en cours (= SQLite players.bankroll)
+      :bankroll,
+      # :active | :folded | :all_in | :out
+      status: :active
     ]
   end
 
@@ -86,31 +96,37 @@ defmodule Poker.TableManager do
     """
 
     defstruct [
-      :pot,                     # Integer — pot principal cumulé
-      :side_pots,               # [{amount :: integer, eligible :: [String.t()]}] | []
-      :current_round,           # :preflop | :flop | :turn | :river | :showdown
-      :current_player_seat,     # Integer — index dans Table.players du joueur à agir
-      :last_raise,              # Integer | nil — montant de la dernière relance
-      :bets,                    # %{player_id => integer} mises du tour en cours
-      :total_bets,              # %{player_id => integer} mises totales de la main
-      :community_cards_count    # Integer : 0 (preflop) | 3 (flop) | 4 (turn) | 5 (river)
+      # Integer — pot principal cumulé
+      :pot,
+      # [{amount :: integer, eligible :: [String.t()]}] | []
+      :side_pots,
+      # :preflop | :flop | :turn | :river | :showdown
+      :current_round,
+      # Integer — index dans Table.players du joueur à agir
+      :current_player_seat,
+      # Integer | nil — montant de la dernière relance
+      :last_raise,
+      # %{player_id => integer} mises du tour en cours
+      :bets,
+      # %{player_id => integer} mises totales de la main
+      :total_bets,
+      # Integer : 0 (preflop) | 3 (flop) | 4 (turn) | 5 (river)
+      :community_cards_count,
+      # seats ayant agi ce tour (pour détecter fin de round)
+      acted_seats: MapSet.new()
     ]
   end
-
 
   # ---------------------------------------------------------------------------
   # API publique — documentation des fonctions à implémenter
   # ---------------------------------------------------------------------------
   use GenServer
-  alias Poker.TableManager
   alias Poker.Players.Registry
-
-
-
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
+
   @doc """
   crée une nouvelle table.
 
@@ -129,8 +145,9 @@ defmodule Poker.TableManager do
       iex> TableManager.create_table("TAG-GM-001")
       {:ok, %TableManager{...}}
   """
-  @spec create_table(String.t()) :: {:ok, struct()} | {:error, :invalid_tag} | {:error, :already_existing}
-  def create_table(gm_id) when is_binary(gm_id)do
+  @spec create_table(String.t()) ::
+          {:ok, struct()} | {:error, :invalid_tag} | {:error, :already_existing}
+  def create_table(gm_id) when is_binary(gm_id) do
     cond do
       String.trim(gm_id) == "" ->
         {:error, :invalid_tag}
@@ -139,9 +156,6 @@ defmodule Poker.TableManager do
         GenServer.call(__MODULE__, {:create_table, gm_id})
     end
   end
-
-
-
 
   @doc """
   Ajoute un joueur à la table.
@@ -231,29 +245,304 @@ defmodule Poker.TableManager do
       iex> TableManager.reset_table(pid, "TAG-GM-001")
       {:ok, %Table{status: :waiting, players: [], hand: nil, ...}}
   """
-  def reset_table(pid, caller_tag), do: GenServer.call(pid, {:reset_table, caller_tag})
+  def reset_table(caller_tag), do: GenServer.call(__MODULE__, {:reset_table, caller_tag})
+
+  def new_hand(caller_tag), do: GenServer.call(__MODULE__, {:new_hand, caller_tag})
+
+  def fold(caller_tag), do: GenServer.call(__MODULE__, {:fold, caller_tag})
+
+  @doc """
+  Le joueur égalise la mise la plus haute du tour en cours.
+
+  Le montant à payer = `max(Map.values(hand.bets)) - hand.bets[caller_id]`
+  (ou juste `max(bets)` si le joueur n'a encore rien misé ce tour).
+
+  Si le joueur n'a pas assez pour égaliser, il paie tout ce qu'il lui reste
+  et passe automatiquement en `:all_in` (c'est un "call partiel").
+
+  Après le call, avancer au joueur suivant puis vérifier si le tour est terminé
+  (voir indice `round_complete?` plus bas).
+
+  ## Paramètres
+  - `caller_tag` — String, tag NFC du joueur (doit être `current_player_seat`)
+
+  ## Retours
+  - `{:ok, %Table{}}` — mise égalisée, état mis à jour
+  - `{:error, :not_your_turn}` — ce n'est pas le tour de ce joueur
+  - `{:error, :no_bet_to_call}` — aucune mise ouverte, il faut checker ou raiser
+  """
+  def call(caller_tag), do: GenServer.call(__MODULE__, {:call, caller_tag})
+
+  @doc """
+  Le joueur passe sans miser (action neutre).
+
+  Uniquement autorisé si le joueur n'a rien à égaliser ce tour :
+  `(hand.bets[caller_id] || 0) == max_bet_du_tour`.
+
+  Au preflop, seule la BB peut checker si personne n'a relancé
+  (elle a déjà misé la BB, donc max_bet == big_blind == sa mise).
+
+  Après le check, avancer au joueur suivant puis vérifier si le tour est terminé.
+
+  ## Paramètres
+  - `caller_tag` — String, tag NFC du joueur (doit être `current_player_seat`)
+
+  ## Retours
+  - `{:ok, %Table{}}` — check accepté
+  - `{:error, :not_your_turn}` — ce n'est pas le tour de ce joueur
+  - `{:error, :must_call_or_raise}` — il y a une mise ouverte, impossible de checker
+  """
+  def check(caller_tag), do: GenServer.call(__MODULE__, {:check, caller_tag})
+
+  @doc """
+  Le joueur mise un montant supérieur à la mise maximale en cours.
+
+  `amount` représente le **total** mis par ce joueur dans la pot ce tour
+  (pas le delta). Le paiement net = `amount - (hand.bets[caller_id] || 0)`.
+
+  Exemple : la BB a mis 20, elle relance à 100 → `amount=100`, elle paie 80 de plus.
+
+  Validations :
+  - `amount >= max(big_blind, hand.last_raise || 0)` sinon `:raise_too_small`
+  - `paiement_net <= bankroll` sinon `:insufficient_funds`
+
+  Après une relance, `last_raise` prend la valeur de `amount`, et **tous** les
+  joueurs actifs devront à nouveau agir (y compris ceux qui avaient déjà callé).
+  Indice : stocker `last_aggressor_seat` dans `Hand` permet de savoir quand le
+  tour se referme (le tour finit quand on revient à ce siège sans nouvelle relance).
+
+  ## Paramètres
+  - `caller_tag` — String, tag NFC du joueur (doit être `current_player_seat`)
+  - `amount` — Integer, total misé par ce joueur ce tour (>= 0)
+
+  ## Retours
+  - `{:ok, %Table{}}` — relance acceptée
+  - `{:error, :not_your_turn}` — ce n'est pas le tour de ce joueur
+  - `{:error, :raise_too_small}` — montant inférieur à la BB ou au dernier raise
+  - `{:error, :insufficient_funds}` — pas assez de bankroll
+  """
+  def raise_bet(caller_tag, amount),
+    do: GenServer.call(__MODULE__, {:raise_bet, caller_tag, amount})
+
+  @doc """
+  Le joueur mise la totalité de son bankroll restant.
+
+  C'est un raccourci pour un raise/call au maximum : le joueur paie tout ce
+  oui corriqu'il lui reste, son bankroll passe à 0 et son statut passe à `:all_in`.
+
+  Si son all-in est **inférieur** à la mise maximale en cours, l'action
+  n'ouvre pas l'enchère (les autres joueurs ne peuvent pas re-raiser au-dessus
+  de ce montant vis-à-vis de ce joueur → side pot à calculer).
+  Indice : `side_pots` se calcule à partir de `total_bets` en fin de main.
+
+  Si son all-in est **supérieur** à la mise maximale, c'est équivalent à un
+  raise : `last_raise` et `last_aggressor_seat` sont mis à jour.
+
+  Le joueur en `:all_in` est ensuite **ignoré** par `next_player/2`.
+
+  ## Paramètres
+  - `caller_tag` — String, tag NFC du joueur (doit être `current_player_seat`)
+
+  ## Retours
+  - `{:ok, %Table{}}` — all-in accepté
+  - `{:error, :not_your_turn}` — ce n'est pas le tour de ce joueur
+  """
+  def all_in(caller_tag), do: GenServer.call(__MODULE__, {:all_in, caller_tag})
+
+  def declare_winner(caller_tag, winner_id),
+    do: GenServer.call(__MODULE__, {:declare_winner, caller_tag, winner_id})
 
   # ---------------------------------------------------------------------------
   # Fonctions privées utilitaires — à implémenter dans le module
   # ---------------------------------------------------------------------------
 
-  # Vérifie que le tag appelant est bien le GM de cette table.
-  # Utilisé dans les handle_call qui nécessitent les droits GM.
+  # round_complete?(table) → boolean
   #
-  #   @spec is_gm?(String.t(), %Table{}) :: boolean()
-  #   defp is_gm?(tag_id, table), do: table.gm_id == tag_id
-
-  # Retourne le prochain seat disponible (longueur de la liste players).
+  # Un tour de mise est terminé quand :
+  #   1. Tous les joueurs :active ont la même mise dans hand.bets
+  #      (les :all_in sont exclus — ils ne peuvent plus agir)
+  #   2. ET le siège courant est `last_aggressor_seat` (le tour a fait le tour complet)
   #
-  #   @spec next_seat([%Player{}]) :: integer()
-  #   defp next_seat(players), do: length(players)
-
-  # Vérifie qu'un tag_id n'est pas déjà dans la liste players.
+  # `last_aggressor_seat` est initialisé à la BB au preflop et au premier actif
+  # après le dealer en post-flop. Il est mis à jour à chaque raise/all_in.
+  # → Ajouter ce champ à Hand.
   #
-  #   @spec already_registered?(String.t(), [%Player{}]) :: boolean()
-  #   defp already_registered?(tag_id, players), do: Enum.any?(players, &(&1.id == tag_id))
+  # Quand round_complete? renvoie true :
+  #   - Remettre hand.bets à %{}
+  #   - Passer au round suivant (:preflop → :flop → :turn → :river → :showdown)
+  #   - Mettre à jour community_cards_count (0→3→4→5→5)
+  #   - Recalculer le premier joueur à agir (premier :active après dealer_seat)
+  #   - Recalculer last_aggressor_seat pour le nouveau tour
 
+  defp advance_action(table, actor_seat, new_bets) do
+    acted = MapSet.put(table.hand.acted_seats, actor_seat)
 
+    active_seats =
+      table.players
+      |> Enum.with_index()
+      |> Enum.filter(fn {p, _} -> p.status == :active end)
+      |> Enum.map(fn {_, i} -> i end)
+
+    max_bet = new_bets |> Map.values() |> Enum.max(fn -> 0 end)
+
+    all_acted = Enum.all?(active_seats, &MapSet.member?(acted, &1))
+
+    all_equal =
+      Enum.all?(active_seats, fn i ->
+        Map.get(new_bets, Enum.at(table.players, i).id, 0) == max_bet
+      end)
+
+    if all_acted and all_equal do
+      advance_round(%Table{table | hand: %Hand{table.hand | acted_seats: acted}})
+    else
+      next = next_player(table.players, actor_seat)
+
+      %Table{
+        table
+        | hand: %Hand{table.hand | bets: new_bets, acted_seats: acted, current_player_seat: next}
+      }
+    end
+  end
+
+  defp advance_round(table) do
+    {next_round, cc_count} =
+      case table.hand.current_round do
+        :preflop -> {:flop, 3}
+        :flop -> {:turn, 4}
+        :turn -> {:river, 5}
+        :river -> {:showdown, 5}
+        :showdown -> {:showdown, 5}
+      end
+
+    n = length(table.players)
+
+    first_active_seat =
+      Enum.find(1..n, fn offset ->
+        seat = rem(table.dealer_seat + offset, n)
+        Enum.at(table.players, seat).status == :active
+      end)
+      |> case do
+        nil -> table.hand.current_player_seat
+        offset -> rem(table.dealer_seat + offset, n)
+      end
+
+    hand = %Hand{
+      table.hand
+      | current_round: next_round,
+        community_cards_count: cc_count,
+        bets: %{},
+        acted_seats: MapSet.new(),
+        current_player_seat: first_active_seat
+    }
+
+    %Table{table | hand: hand}
+  end
+
+  defp compute_side_pots(players, total_bets) do
+    all_in_players = Enum.filter(players, &(&1.status == :all_in))
+
+    if Enum.empty?(all_in_players) do
+      []
+    else
+      caps =
+        all_in_players
+        |> Enum.map(fn p -> Map.get(total_bets, p.id, 0) end)
+        |> Enum.sort()
+        |> Enum.uniq()
+
+      Enum.map(caps, fn cap ->
+        eligible =
+          players
+          |> Enum.filter(fn p ->
+            p.status in [:active, :all_in] and Map.get(total_bets, p.id, 0) >= cap
+          end)
+          |> Enum.map(& &1.id)
+
+        {cap * max(length(eligible), 1), eligible}
+      end)
+    end
+  end
+
+  defp broadcast!(table) do
+    Phoenix.PubSub.broadcast!(Poker.PubSub, "table", {:table_updated, table})
+  end
+
+  @spec is_gm?(String.t(), %Table{}) :: boolean()
+  defp is_gm?(tag_id, table), do: table.gm_id == tag_id
+
+  defp game_started?(table), do: table.status == :playing
+
+  defp post_blinds(players, dealer_seat, small_blind, big_blind) do
+    n = length(players)
+    sb_seat = rem(dealer_seat + 1, n)
+    bb_seat = rem(dealer_seat + 2, n)
+
+    sb_id = Enum.at(players, sb_seat).id
+    bb_id = Enum.at(players, bb_seat).id
+
+    sb_amount = min(Enum.at(players, sb_seat).bankroll, small_blind)
+    bb_amount = min(Enum.at(players, bb_seat).bankroll, big_blind)
+
+    players =
+      Enum.map(players, fn
+        %Player{id: ^sb_id} = p ->
+          status = if sb_amount == p.bankroll, do: :all_in, else: :active
+          %{p | bankroll: p.bankroll - sb_amount, status: status}
+
+        %Player{id: ^bb_id} = p ->
+          status = if bb_amount == p.bankroll, do: :all_in, else: :active
+          %{p | bankroll: p.bankroll - bb_amount, status: status}
+
+        p ->
+          p
+      end)
+
+    bets = %{sb_id => sb_amount, bb_id => bb_amount}
+
+    {players, bets}
+  end
+
+  defp next_player(players, current_seat) do
+    n = length(players)
+    # On génère les potentielles prochaines places
+    seats = Enum.map(1..(n - 1), fn offset -> rem(current_seat + offset, n) end)
+    # On renvoit la premiere qui est active
+    Enum.find(seats, fn seat -> Enum.at(players, seat).status == :active end)
+  end
+
+  defp end_hand(table, winner_id) do
+    pot = table.hand.pot
+
+    players =
+      Enum.map(table.players, fn
+        %Player{id: ^winner_id} = p -> %{p | bankroll: p.bankroll + pot}
+        p -> p
+      end)
+
+    persist_bankrolls(players)
+
+    players =
+      Enum.map(players, fn
+        %Player{bankroll: 0} = p -> %{p | status: :out}
+        %Player{status: s} = p when s in [:folded, :all_in] -> %{p | status: :active}
+        p -> p
+      end)
+
+    %Table{table | hand: nil, players: players}
+  end
+
+  defp persist_bankrolls(players) do
+    Enum.each(players, fn player ->
+      case Registry.lookup(player.id) do
+        {:ok, registry_player} ->
+          delta = player.bankroll - registry_player.bankroll
+          if delta != 0, do: Registry.update_bankroll(player.id, delta)
+
+        _ ->
+          :ok
+      end
+    end)
+  end
 
   # --------------------CALLBACK--------------------------
 
@@ -261,7 +550,6 @@ defmodule Poker.TableManager do
   def init(_opts) do
     {:ok, nil}
   end
-
 
   def handle_call({:create_table, _gm_id}, _from, %Table{} = state) do
     {:reply, {:error, :already_existing}, state}
@@ -275,19 +563,14 @@ defmodule Poker.TableManager do
 
       {:ok, %Poker.Players.Player{gm: true} = player} ->
         table = %Table{
-        table_id: Ecto.UUID.generate(),
-        gm_id: gm_id,
-        players: [
-          %Player{
-            id: gm_id,
-            name: player.name,
-            bankroll: player.bankroll,
-            seat: 0
-            }
-          ]
+          table_id: Ecto.UUID.generate(),
+          gm_id: gm_id,
+          players: [%Player{id: gm_id, name: player.name, bankroll: player.bankroll}]
         }
 
+        broadcast!(table)
         {:reply, {:ok, table}, table}
+
       {:ok, %Poker.Players.Player{gm: false}} ->
         {:reply, {:error, :not_gm}, state}
     end
@@ -300,7 +583,7 @@ defmodule Poker.TableManager do
 
   @impl true
   def handle_call({:join, tag_id}, _from, state) do
-    #est-ce que le joueur est déjà enregistré ?
+    # est-ce que le joueur est déjà enregistré ?
     cond do
       Enum.find(state.players, &(&1.id == tag_id)) != nil ->
         {:reply, {:error, :player_already_registered}, state}
@@ -310,23 +593,26 @@ defmodule Poker.TableManager do
 
       state.status == :playing ->
         {:reply, {:error, :game_already_started}, state}
+
       true ->
         case Registry.lookup(tag_id) do
           {:error, :not_found} ->
             {:reply, {:error, :unknown_tag}, state}
 
           {:ok, player} ->
+            if player.bankroll < state.big_blind do
+              {:reply, {:error, :not_enough_money}, state}
+            else
+              players =
+                state.players ++
+                  [
+                    %Player{id: tag_id, name: player.name, bankroll: player.bankroll}
+                  ]
 
-            players = state.players ++ [
-              %Player{
-              id: tag_id,
-              name: player.name,
-              bankroll: player.bankroll,
-              seat: length(state.players)
-              }]
-
-            table = %Table{state | players: players}
-            {:reply, {:ok, table}, table}
+              table = %Table{state | players: players}
+              broadcast!(table)
+              {:reply, {:ok, table}, table}
+            end
         end
     end
   end
@@ -336,15 +622,285 @@ defmodule Poker.TableManager do
     cond do
       length(state.players) < 2 ->
         {:reply, {:error, :not_enough_players}, state}
+
       state.status == :playing ->
         {:reply, {:error, :game_already_started}, state}
 
       state.gm_id == caller_id ->
         table = %Table{state | status: :playing}
+        broadcast!(table)
         {:reply, {:ok, table}, table}
 
       state.gm_id != caller_id ->
         {:reply, {:error, :not_gm}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:reset_table, gm_id}, _from, state) do
+    case Registry.lookup(gm_id) do
+      {:error, :not_found} ->
+        {:reply, {:error, :unknown_tag}, state}
+
+      {:ok, %Poker.Players.Player{gm: true} = player} ->
+        table = %Table{
+          table_id: state.table_id,
+          gm_id: gm_id,
+          players: [%Player{id: gm_id, name: player.name, bankroll: player.bankroll}]
+        }
+
+        broadcast!(table)
+        {:reply, {:ok, table}, table}
+
+      {:ok, %Poker.Players.Player{gm: false}} ->
+        {:reply, {:error, :not_gm}, state}
+    end
+  end
+
+  def handle_call({:new_hand, gm_id}, _from, state) do
+    active_players = Enum.reject(state.players, &(&1.status == :out))
+
+    cond do
+      not is_gm?(gm_id, state) ->
+        {:reply, {:error, :not_gm}, state}
+
+      not game_started?(state) ->
+        {:reply, {:error, :game_not_started}, state}
+
+      length(active_players) < 2 ->
+        {:reply, {:error, :not_enough_players}, state}
+
+      true ->
+        players =
+          Enum.map(active_players, fn
+            %Player{status: status} = p when status in [:folded, :all_in] ->
+              %{p | status: :active}
+
+            p ->
+              p
+          end)
+
+        new_dealer = rem(state.dealer_seat + 1, length(players))
+        {players, bets} = post_blinds(players, new_dealer, state.small_blind, state.big_blind)
+        utg = rem(new_dealer + 3, length(players))
+
+        hand = %Hand{
+          current_round: :preflop,
+          community_cards_count: 0,
+          bets: bets,
+          total_bets: bets,
+          pot: state.small_blind + state.big_blind,
+          side_pots: [],
+          last_raise: nil,
+          current_player_seat: utg
+        }
+
+        table = %Table{state | dealer_seat: new_dealer, players: players, hand: hand}
+        broadcast!(table)
+        {:reply, {:ok, table}, table}
+    end
+  end
+
+  @impl true
+  def handle_call({:fold, caller_id}, _from, state) do
+    current_player = Enum.at(state.players, state.hand.current_player_seat)
+
+    if caller_id == current_player.id do
+      updated_players =
+        Enum.map(state.players, fn
+          %Player{id: ^caller_id} = player -> %{player | status: :folded}
+          player -> player
+        end)
+
+      if Enum.count(updated_players, fn player -> player.status in [:active, :all_in] end) > 1 do
+        updated_table = %Table{
+          state
+          | players: updated_players,
+            hand: %Hand{
+              state.hand
+              | current_player_seat: next_player(updated_players, state.hand.current_player_seat)
+            }
+        }
+
+        broadcast!(updated_table)
+        {:reply, {:ok, updated_table}, updated_table}
+      else
+        winner = Enum.find(updated_players, fn player -> player.status in [:active, :all_in] end)
+        updated_table = end_hand(%Table{state | players: updated_players}, winner.id)
+        broadcast!(updated_table)
+        {:reply, {:ok, updated_table}, updated_table}
+      end
+    else
+      {:reply, {:error, :not_your_turn}, state}
+    end
+  end
+
+  def handle_call({:check, caller_id}, _from, state) do
+    actor_seat = state.hand.current_player_seat
+    current_player = Enum.at(state.players, actor_seat)
+
+    cond do
+      caller_id != current_player.id ->
+        {:reply, {:error, :not_your_turn}, state}
+
+      Map.get(state.hand.bets, caller_id, 0) <
+          state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end) ->
+        {:reply, {:error, :must_call_or_raise}, state}
+
+      true ->
+        table = advance_action(state, actor_seat, state.hand.bets)
+        broadcast!(table)
+        {:reply, {:ok, table}, table}
+    end
+  end
+
+  def handle_call({:call, caller_id}, _from, state) do
+    actor_seat = state.hand.current_player_seat
+    current_player = Enum.at(state.players, actor_seat)
+
+    if caller_id != current_player.id do
+      {:reply, {:error, :not_your_turn}, state}
+    else
+      max_bet = state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end)
+      my_bet = Map.get(state.hand.bets, caller_id, 0)
+      actual = min(max_bet - my_bet, current_player.bankroll)
+
+      players =
+        Enum.map(state.players, fn
+          %Player{id: ^caller_id} = p ->
+            %{
+              p
+              | bankroll: p.bankroll - actual,
+                status: if(p.bankroll == actual, do: :all_in, else: :active)
+            }
+
+          p ->
+            p
+        end)
+
+      bets = Map.put(state.hand.bets, caller_id, my_bet + actual)
+      total_bets = Map.update(state.hand.total_bets, caller_id, actual, &(&1 + actual))
+      hand = %Hand{state.hand | bets: bets, total_bets: total_bets, pot: state.hand.pot + actual}
+      table = advance_action(%Table{state | players: players, hand: hand}, actor_seat, bets)
+      broadcast!(table)
+      {:reply, {:ok, table}, table}
+    end
+  end
+
+  def handle_call({:all_in, caller_id}, _from, state) do
+    actor_seat = state.hand.current_player_seat
+    current_player = Enum.at(state.players, actor_seat)
+
+    if caller_id != current_player.id do
+      {:reply, {:error, :not_your_turn}, state}
+    else
+      amount = current_player.bankroll
+      my_bet = Map.get(state.hand.bets, caller_id, 0)
+      max_bet = state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end)
+      is_raise = my_bet + amount > max_bet
+
+      players =
+        Enum.map(state.players, fn
+          %Player{id: ^caller_id} = p -> %{p | bankroll: 0, status: :all_in}
+          p -> p
+        end)
+
+      bets = Map.put(state.hand.bets, caller_id, my_bet + amount)
+      total_bets = Map.update(state.hand.total_bets, caller_id, amount, &(&1 + amount))
+      side_pots = compute_side_pots(players, total_bets)
+
+      hand = %Hand{
+        state.hand
+        | bets: bets,
+          total_bets: total_bets,
+          pot: state.hand.pot + amount,
+          side_pots: side_pots
+      }
+
+      table =
+        if is_raise do
+          next = next_player(players, actor_seat)
+
+          %Table{
+            state
+            | players: players,
+              hand: %Hand{hand | acted_seats: MapSet.new([actor_seat]), current_player_seat: next}
+          }
+        else
+          advance_action(%Table{state | players: players, hand: hand}, actor_seat, bets)
+        end
+
+      broadcast!(table)
+      {:reply, {:ok, table}, table}
+    end
+  end
+
+  def handle_call({:raise_bet, caller_id, amount}, _from, state) do
+    actor_seat = state.hand.current_player_seat
+    current_player = Enum.at(state.players, actor_seat)
+    min_raise = max(state.big_blind, state.hand.last_raise || 0)
+
+    cond do
+      caller_id != current_player.id ->
+        {:reply, {:error, :not_your_turn}, state}
+
+      amount < min_raise ->
+        {:reply, {:error, :raise_too_small}, state}
+
+      amount > current_player.bankroll ->
+        {:reply, {:error, :insufficient_funds}, state}
+
+      true ->
+        my_bet = Map.get(state.hand.bets, caller_id, 0)
+
+        players =
+          Enum.map(state.players, fn
+            %Player{id: ^caller_id} = p ->
+              %{
+                p
+                | bankroll: p.bankroll - amount,
+                  status: if(p.bankroll == amount, do: :all_in, else: :active)
+              }
+
+            p ->
+              p
+          end)
+
+        bets = Map.put(state.hand.bets, caller_id, my_bet + amount)
+        total_bets = Map.update(state.hand.total_bets, caller_id, amount, &(&1 + amount))
+        next = next_player(players, actor_seat)
+
+        hand = %Hand{
+          state.hand
+          | bets: bets,
+            total_bets: total_bets,
+            pot: state.hand.pot + amount,
+            last_raise: my_bet + amount,
+            acted_seats: MapSet.new([actor_seat]),
+            current_player_seat: next
+        }
+
+        table = %Table{state | players: players, hand: hand}
+        broadcast!(table)
+        {:reply, {:ok, table}, table}
+    end
+  end
+
+  def handle_call({:declare_winner, caller_id, winner_id}, _from, state) do
+    cond do
+      not is_gm?(caller_id, state) ->
+        {:reply, {:error, :not_gm}, state}
+
+      state.hand == nil or state.hand.current_round != :showdown ->
+        {:reply, {:error, :not_showdown}, state}
+
+      not Enum.any?(state.players, &(&1.id == winner_id)) ->
+        {:reply, {:error, :player_not_found}, state}
+
+      true ->
+        updated_table = end_hand(state, winner_id)
+        broadcast!(updated_table)
+        {:reply, {:ok, updated_table}, updated_table}
     end
   end
 end
