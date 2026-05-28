@@ -229,11 +229,20 @@ defmodule PokerWeb.TableLive do
           {role_label(@role)}
           {if @player, do: "· #{@player.name}"}
         </span>
-        <%= if @table do %>
-          <span class="text-zinc-500 text-xs">
-            {length(@table.players)} joueur(s) · {status_label(@table.status)}
-          </span>
-        <% end %>
+        <div class="flex items-center gap-3">
+          <%= if @table do %>
+            <span class="text-zinc-500 text-xs">
+              {length(@table.players)} joueur(s) · {status_label(@table.status)}
+            </span>
+          <% end %>
+          <button
+            phx-click={JS.show(to: "#hand-rankings-modal")}
+            class="w-7 h-7 rounded-full bg-zinc-700 hover:bg-zinc-600 flex items-center justify-center text-zinc-300 text-xs font-bold transition-colors"
+            title="Combinaisons poker"
+          >
+            ?
+          </button>
+        </div>
       </div>
 
       <%!-- Contenu principal --%>
@@ -261,6 +270,8 @@ defmodule PokerWeb.TableLive do
       <%= if @role == :gm do %>
         <.gm_panel table={@table} />
       <% end %>
+
+      <.hand_rankings_modal />
     </div>
     """
   end

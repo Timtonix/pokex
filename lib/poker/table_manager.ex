@@ -374,6 +374,16 @@ defmodule Poker.TableManager do
   #   - Recalculer le premier joueur à agir (premier :active après dealer_seat)
   #   - Recalculer last_aggressor_seat pour le nouveau tour
 
+  defp validate_action(state, caller_id) do
+    current_player = Enum.at(state.players, state.hand.current_player_seat)
+
+    cond do
+      state.hand.current_round == :showdown -> {:error, :showdown_no_actions}
+      caller_id != current_player.id -> {:error, :not_your_turn}
+      true -> :ok
+    end
+  end
+
   defp advance_action(table, actor_seat, new_bets) do
     acted = MapSet.put(table.hand.acted_seats, actor_seat)
 
@@ -703,54 +713,54 @@ defmodule Poker.TableManager do
 
   @impl true
   def handle_call({:fold, caller_id}, _from, state) do
-    current_player = Enum.at(state.players, state.hand.current_player_seat)
+    case validate_action(state, caller_id) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
 
-    if caller_id == current_player.id do
-      updated_players =
-        Enum.map(state.players, fn
-          %Player{id: ^caller_id} = player -> %{player | status: :folded}
-          player -> player
-        end)
+      :ok ->
+        updated_players =
+          Enum.map(state.players, fn
+            %Player{id: ^caller_id} = player -> %{player | status: :folded}
+            player -> player
+          end)
 
-      if Enum.count(updated_players, fn player -> player.status in [:active, :all_in] end) > 1 do
-        updated_table = %Table{
-          state
-          | players: updated_players,
-            hand: %Hand{
-              state.hand
-              | current_player_seat: next_player(updated_players, state.hand.current_player_seat)
-            }
-        }
+        if Enum.count(updated_players, fn player -> player.status in [:active, :all_in] end) > 1 do
+          updated_table = %Table{
+            state
+            | players: updated_players,
+              hand: %Hand{
+                state.hand
+                | current_player_seat: next_player(updated_players, state.hand.current_player_seat)
+              }
+          }
 
-        broadcast!(updated_table)
-        {:reply, {:ok, updated_table}, updated_table}
-      else
-        winner = Enum.find(updated_players, fn player -> player.status in [:active, :all_in] end)
-        updated_table = end_hand(%Table{state | players: updated_players}, winner.id)
-        broadcast!(updated_table)
-        {:reply, {:ok, updated_table}, updated_table}
-      end
-    else
-      {:reply, {:error, :not_your_turn}, state}
+          broadcast!(updated_table)
+          {:reply, {:ok, updated_table}, updated_table}
+        else
+          winner = Enum.find(updated_players, fn player -> player.status in [:active, :all_in] end)
+          updated_table = end_hand(%Table{state | players: updated_players}, winner.id)
+          broadcast!(updated_table)
+          {:reply, {:ok, updated_table}, updated_table}
+        end
     end
   end
 
   def handle_call({:check, caller_id}, _from, state) do
     actor_seat = state.hand.current_player_seat
-    current_player = Enum.at(state.players, actor_seat)
 
-    cond do
-      caller_id != current_player.id ->
-        {:reply, {:error, :not_your_turn}, state}
+    case validate_action(state, caller_id) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
 
-      Map.get(state.hand.bets, caller_id, 0) <
-          state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end) ->
-        {:reply, {:error, :must_call_or_raise}, state}
-
-      true ->
-        table = advance_action(state, actor_seat, state.hand.bets)
-        broadcast!(table)
-        {:reply, {:ok, table}, table}
+      :ok ->
+        if Map.get(state.hand.bets, caller_id, 0) <
+             (state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end)) do
+          {:reply, {:error, :must_call_or_raise}, state}
+        else
+          table = advance_action(state, actor_seat, state.hand.bets)
+          broadcast!(table)
+          {:reply, {:ok, table}, table}
+        end
     end
   end
 
@@ -758,32 +768,28 @@ defmodule Poker.TableManager do
     actor_seat = state.hand.current_player_seat
     current_player = Enum.at(state.players, actor_seat)
 
-    if caller_id != current_player.id do
-      {:reply, {:error, :not_your_turn}, state}
-    else
-      max_bet = state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end)
-      my_bet = Map.get(state.hand.bets, caller_id, 0)
-      actual = min(max_bet - my_bet, current_player.bankroll)
+    case validate_action(state, caller_id) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
 
-      players =
-        Enum.map(state.players, fn
-          %Player{id: ^caller_id} = p ->
-            %{
-              p
-              | bankroll: p.bankroll - actual,
-                status: if(p.bankroll == actual, do: :all_in, else: :active)
-            }
+      :ok ->
+        max_bet = state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end)
+        my_bet = Map.get(state.hand.bets, caller_id, 0)
+        actual = min(max_bet - my_bet, current_player.bankroll)
 
-          p ->
-            p
-        end)
+        players =
+          Enum.map(state.players, fn
+            %Player{id: ^caller_id} = p ->
+              %{p | bankroll: p.bankroll - actual, status: if(p.bankroll == actual, do: :all_in, else: :active)}
+            p -> p
+          end)
 
-      bets = Map.put(state.hand.bets, caller_id, my_bet + actual)
-      total_bets = Map.update(state.hand.total_bets, caller_id, actual, &(&1 + actual))
-      hand = %Hand{state.hand | bets: bets, total_bets: total_bets, pot: state.hand.pot + actual}
-      table = advance_action(%Table{state | players: players, hand: hand}, actor_seat, bets)
-      broadcast!(table)
-      {:reply, {:ok, table}, table}
+        bets = Map.put(state.hand.bets, caller_id, my_bet + actual)
+        total_bets = Map.update(state.hand.total_bets, caller_id, actual, &(&1 + actual))
+        hand = %Hand{state.hand | bets: bets, total_bets: total_bets, pot: state.hand.pot + actual}
+        table = advance_action(%Table{state | players: players, hand: hand}, actor_seat, bets)
+        broadcast!(table)
+        {:reply, {:ok, table}, table}
     end
   end
 
@@ -791,9 +797,11 @@ defmodule Poker.TableManager do
     actor_seat = state.hand.current_player_seat
     current_player = Enum.at(state.players, actor_seat)
 
-    if caller_id != current_player.id do
-      {:reply, {:error, :not_your_turn}, state}
-    else
+    case validate_action(state, caller_id) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+
+      :ok ->
       amount = current_player.bankroll
       my_bet = Map.get(state.hand.bets, caller_id, 0)
       max_bet = state.hand.bets |> Map.values() |> Enum.max(fn -> 0 end)
@@ -840,10 +848,12 @@ defmodule Poker.TableManager do
     current_player = Enum.at(state.players, actor_seat)
     min_raise = max(state.big_blind, state.hand.last_raise || 0)
 
-    cond do
-      caller_id != current_player.id ->
-        {:reply, {:error, :not_your_turn}, state}
+    case validate_action(state, caller_id) do
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
 
+      :ok ->
+    cond do
       amount < min_raise ->
         {:reply, {:error, :raise_too_small}, state}
 
@@ -884,6 +894,7 @@ defmodule Poker.TableManager do
         broadcast!(table)
         {:reply, {:ok, table}, table}
     end
+  end
   end
 
   def handle_call({:declare_winner, caller_id, winner_id}, _from, state) do
