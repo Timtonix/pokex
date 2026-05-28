@@ -163,6 +163,33 @@ defmodule PokerWeb.TableLiveComponents do
     """
   end
 
+  def gm_panel(%{table: %Table{status: :playing, hand: %{current_round: :showdown}}} = assigns) do
+    eligible = Enum.filter(assigns.table.players, &(&1.status not in [:folded, :out]))
+
+    assigns = assign(assigns, :eligible, eligible)
+
+    ~H"""
+    <div class="border-t border-zinc-800 px-4 py-4 space-y-2">
+      <p class="text-xs text-zinc-500 text-center mb-3">Panel GM — Abattage</p>
+      <%= for player <- @eligible do %>
+        <button
+          phx-click="declare_winner"
+          phx-value-winner={player.id}
+          class="w-full bg-yellow-700 hover:bg-yellow-600 py-3 rounded-lg font-semibold transition-colors"
+        >
+          {player.name} gagne
+        </button>
+      <% end %>
+      <button
+        phx-click="reset_table"
+        class="w-full bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-sm text-zinc-400 transition-colors"
+      >
+        Fin de partie
+      </button>
+    </div>
+    """
+  end
+
   def gm_panel(%{table: %Table{status: :playing}} = assigns) do
     ~H"""
     <div class="border-t border-zinc-800 px-4 py-4 space-y-2">

@@ -109,6 +109,19 @@ defmodule PokerWeb.TableLive do
     end
   end
 
+  def handle_event(
+        "declare_winner",
+        %{"winner" => winner_id},
+        %{assigns: %{role: :gm, tag_id: tag_id}} = socket
+      ) do
+    case TableManager.declare_winner(tag_id, winner_id) do
+      {:ok, _table} -> {:noreply, socket}
+      {:error, reason} -> {:noreply, assign(socket, :error, format_error(reason))}
+    end
+  end
+
+  def handle_event("declare_winner", _params, socket), do: {:noreply, socket}
+
   # ---------------------------------------------------------------------------
   # Events joueur
   # ---------------------------------------------------------------------------
@@ -196,6 +209,8 @@ defmodule PokerWeb.TableLive do
   defp format_error(:not_your_turn), do: "Ce n'est pas votre tour."
   defp format_error(:must_call_or_raise), do: "Vous devez suivre ou relancer."
   defp format_error(:insufficient_funds), do: "Pas assez de jetons."
+  defp format_error(:not_showdown), do: "L'abattage n'a pas encore eu lieu."
+  defp format_error(:player_not_found), do: "Joueur introuvable."
   defp format_error(_), do: "Une erreur est survenue."
 
   # ---------------------------------------------------------------------------
