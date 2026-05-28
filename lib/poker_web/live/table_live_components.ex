@@ -81,17 +81,23 @@ defmodule PokerWeb.TableLiveComponents do
         <% max_bet = @table.hand.bets |> Map.values() |> Enum.max(fn -> 0 end) %>
         <% my_bet = Map.get(@table.hand.bets, @tag_id, 0) %>
         <% to_call = max(max_bet - my_bet, 0) %>
+        <% min_to_bet = max(@table.big_blind, @table.hand.last_raise || 0) %>
+
         <div class="flex justify-around text-sm">
           <div class="text-center">
             <p class="text-zinc-500 text-xs">BB</p>
             <p class="font-mono text-zinc-300">{@table.big_blind}</p>
           </div>
           <div class="text-center">
+            <p class="text-zinc-500 text-xs">Min</p>
+            <p class="font-mono text-zinc-300">{min_to_bet}</p>
+          </div>
+          <div class="text-center">
             <p class="text-zinc-500 text-xs">Mise max</p>
             <p class="font-mono text-zinc-300">{max_bet}</p>
           </div>
           <div class="text-center">
-            <p class="text-zinc-500 text-xs">À suivre</p>
+            <p class="text-zinc-500 text-xs">Pour suivre</p>
             <p class={"font-mono " <> if(to_call > 0, do: "text-yellow-400", else: "text-green-400")}>{to_call}</p>
           </div>
         </div>

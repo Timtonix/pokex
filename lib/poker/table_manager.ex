@@ -442,7 +442,8 @@ defmodule Poker.TableManager do
         community_cards_count: cc_count,
         bets: %{},
         acted_seats: MapSet.new(),
-        current_player_seat: first_active_seat
+        current_player_seat: first_active_seat,
+        last_raise: nil
     }
 
     %Table{table | hand: hand}

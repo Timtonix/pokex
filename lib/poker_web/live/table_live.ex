@@ -211,6 +211,7 @@ defmodule PokerWeb.TableLive do
   defp format_error(:insufficient_funds), do: "Pas assez de jetons."
   defp format_error(:not_showdown), do: "L'abattage n'a pas encore eu lieu."
   defp format_error(:player_not_found), do: "Joueur introuvable."
+  defp format_error(:raise_too_small), do: "Mise trop faible."
   defp format_error(_), do: "Une erreur est survenue."
 
   # ---------------------------------------------------------------------------
