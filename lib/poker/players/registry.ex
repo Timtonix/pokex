@@ -37,6 +37,16 @@ defmodule Poker.Players.Registry do
     GenServer.call(__MODULE__, {:make_gm, tag_id})
   end
 
+  @doc "Supprime un joueur (mémoire + SQLite)"
+  def delete(tag_id) do
+    GenServer.call(__MODULE__, {:delete, tag_id})
+  end
+
+  @doc "Fixe la bankroll à une valeur absolue"
+  def set_bankroll(tag_id, amount) do
+    GenServer.call(__MODULE__, {:set_bankroll, tag_id, amount})
+  end
+
   # ---------------------------------------------------------------------------
   # Callbacks GenServer
   # ---------------------------------------------------------------------------
@@ -148,6 +158,32 @@ defmodule Poker.Players.Registry do
 
           {:error, changeset} ->
             {:reply, {:error, changeset}, state}
+        end
+    end
+  end
+
+  def handle_call({:delete, tag_id}, _from, state) do
+    case Map.get(state, tag_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      player ->
+        case Repo.delete(player) do
+          {:ok, _} -> {:reply, :ok, Map.delete(state, tag_id)}
+          {:error, changeset} -> {:reply, {:error, changeset}, state}
+        end
+    end
+  end
+
+  def handle_call({:set_bankroll, tag_id, amount}, _from, state) do
+    case Map.get(state, tag_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      player ->
+        case Player.changeset(player, %{bankroll: amount}) |> Repo.update() do
+          {:ok, updated} -> {:reply, {:ok, updated}, Map.put(state, tag_id, updated)}
+          {:error, changeset} -> {:reply, {:error, changeset}, state}
         end
     end
   end

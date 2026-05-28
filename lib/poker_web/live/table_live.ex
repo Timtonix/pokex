@@ -269,7 +269,7 @@ defmodule PokerWeb.TableLive do
 
       <%!-- Panel GM (affiché uniquement si GM) --%>
       <%= if @role == :gm do %>
-        <.gm_panel table={@table} />
+        <.gm_panel table={@table} tag_id={@tag_id} />
       <% end %>
 
       <.hand_rankings_modal />

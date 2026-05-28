@@ -180,6 +180,12 @@ defmodule PokerWeb.TableLiveComponents do
       >
         Créer la table
       </button>
+      <.link
+        navigate={~p"/gm?tag=#{@tag_id}"}
+        class="block w-full text-center bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-sm text-zinc-400 transition-colors"
+      >
+        Gestion des joueurs
+      </.link>
     </div>
     """
   end
@@ -200,6 +206,12 @@ defmodule PokerWeb.TableLiveComponents do
       >
         Réinitialiser la table
       </button>
+      <.link
+        navigate={~p"/gm?tag=#{@tag_id}"}
+        class="block w-full text-center bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-sm text-zinc-400 transition-colors"
+      >
+        Gestion des joueurs
+      </.link>
     </div>
     """
   end

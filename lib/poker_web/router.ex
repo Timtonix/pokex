@@ -21,6 +21,7 @@ defmodule PokerWeb.Router do
 
     live "/scan", ScanLive
     live "/table", TableLive
+    live "/gm", GmLive
   end
 
   # Other scopes may use custom stacks.
