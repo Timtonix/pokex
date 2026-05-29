@@ -98,8 +98,6 @@ defmodule Poker.TableManager do
     defstruct [
       # Integer — pot principal cumulé
       :pot,
-      # [{amount :: integer, eligible :: [String.t()]}] | []
-      :side_pots,
       # :preflop | :flop | :turn | :river | :showdown
       :current_round,
       # Integer — index dans Table.players du joueur à agir
@@ -112,6 +110,8 @@ defmodule Poker.TableManager do
       :total_bets,
       # Integer : 0 (preflop) | 3 (flop) | 4 (turn) | 5 (river)
       :community_cards_count,
+      # [{amount, [eligible_ids]}] — pots à distribuer à l'abattage, du principal au side pot
+      remaining_pots: [],
       # seats ayant agi ce tour (pour détecter fin de round)
       acted_seats: MapSet.new()
     ]
@@ -436,6 +436,13 @@ defmodule Poker.TableManager do
         offset -> rem(table.dealer_seat + offset, n)
       end
 
+    remaining_pots =
+      if next_round == :showdown do
+        compute_pots(table.players, table.hand.total_bets)
+      else
+        []
+      end
+
     hand = %Hand{
       table.hand
       | current_round: next_round,
@@ -443,35 +450,47 @@ defmodule Poker.TableManager do
         bets: %{},
         acted_seats: MapSet.new(),
         current_player_seat: first_active_seat,
-        last_raise: nil
+        last_raise: nil,
+        remaining_pots: remaining_pots
     }
 
     %Table{table | hand: hand}
   end
 
-  defp compute_side_pots(players, total_bets) do
-    all_in_players = Enum.filter(players, &(&1.status == :all_in))
+  defp compute_pots(players, total_bets) do
+    all_caps =
+      total_bets
+      |> Map.values()
+      |> Enum.sort()
+      |> Enum.uniq()
 
-    if Enum.empty?(all_in_players) do
-      []
-    else
-      caps =
-        all_in_players
-        |> Enum.map(fn p -> Map.get(total_bets, p.id, 0) end)
-        |> Enum.sort()
-        |> Enum.uniq()
+    {pots, _} =
+      Enum.reduce(all_caps, {[], 0}, fn cap, {pots, prev_cap} ->
+        amount =
+          Enum.reduce(players, 0, fn p, acc ->
+            contrib = Map.get(total_bets, p.id, 0)
+            if contrib > prev_cap, do: acc + min(contrib, cap) - prev_cap, else: acc
+          end)
 
-      Enum.map(caps, fn cap ->
         eligible =
           players
           |> Enum.filter(fn p ->
-            p.status in [:active, :all_in] and Map.get(total_bets, p.id, 0) >= cap
+            p.status not in [:folded, :out] and Map.get(total_bets, p.id, 0) >= cap
           end)
           |> Enum.map(& &1.id)
 
-        {cap * max(length(eligible), 1), eligible}
+        {pots ++ [{amount, eligible}], cap}
       end)
-    end
+
+    # Fusionner les pots consécutifs ayant les mêmes éligibles
+    pots
+    |> Enum.reduce([], fn {amount, eligible}, acc ->
+      case acc do
+        [{prev_amount, ^eligible} | rest] -> [{prev_amount + amount, eligible} | rest]
+        _ -> [{amount, eligible} | acc]
+      end
+    end)
+    |> Enum.reverse()
   end
 
   defp broadcast!(table) do
@@ -521,19 +540,11 @@ defmodule Poker.TableManager do
     Enum.find(seats, fn seat -> Enum.at(players, seat).status == :active end)
   end
 
-  defp end_hand(table, winner_id) do
-    pot = table.hand.pot
+  defp end_hand(table) do
+    persist_bankrolls(table.players)
 
     players =
       Enum.map(table.players, fn
-        %Player{id: ^winner_id} = p -> %{p | bankroll: p.bankroll + pot}
-        p -> p
-      end)
-
-    persist_bankrolls(players)
-
-    players =
-      Enum.map(players, fn
         %Player{bankroll: 0} = p -> %{p | status: :out}
         %Player{status: s} = p when s in [:folded, :all_in] -> %{p | status: :active}
         p -> p
@@ -701,7 +712,6 @@ defmodule Poker.TableManager do
           bets: bets,
           total_bets: bets,
           pot: state.small_blind + state.big_blind,
-          side_pots: [],
           last_raise: nil,
           current_player_seat: utg
         }
@@ -739,7 +749,16 @@ defmodule Poker.TableManager do
           {:reply, {:ok, updated_table}, updated_table}
         else
           winner = Enum.find(updated_players, fn player -> player.status in [:active, :all_in] end)
-          updated_table = end_hand(%Table{state | players: updated_players}, winner.id)
+          winner_id = winner.id
+          pot = state.hand.pot
+
+          credited =
+            Enum.map(updated_players, fn
+              %Player{id: ^winner_id} = p -> %{p | bankroll: p.bankroll + pot}
+              p -> p
+            end)
+
+          updated_table = end_hand(%Table{state | players: credited})
           broadcast!(updated_table)
           {:reply, {:ok, updated_table}, updated_table}
         end
@@ -816,14 +835,12 @@ defmodule Poker.TableManager do
 
       bets = Map.put(state.hand.bets, caller_id, my_bet + amount)
       total_bets = Map.update(state.hand.total_bets, caller_id, amount, &(&1 + amount))
-      side_pots = compute_side_pots(players, total_bets)
 
       hand = %Hand{
         state.hand
         | bets: bets,
           total_bets: total_bets,
-          pot: state.hand.pot + amount,
-          side_pots: side_pots
+          pot: state.hand.pot + amount
       }
 
       table =
@@ -906,13 +923,32 @@ defmodule Poker.TableManager do
       state.hand == nil or state.hand.current_round != :showdown ->
         {:reply, {:error, :not_showdown}, state}
 
-      not Enum.any?(state.players, &(&1.id == winner_id)) ->
-        {:reply, {:error, :player_not_found}, state}
+      state.hand.remaining_pots == [] ->
+        {:reply, {:error, :no_pots_remaining}, state}
 
       true ->
-        updated_table = end_hand(state, winner_id)
-        broadcast!(updated_table)
-        {:reply, {:ok, updated_table}, updated_table}
+        [{amount, eligible} | rest_pots] = state.hand.remaining_pots
+
+        if winner_id not in eligible do
+          {:reply, {:error, :player_not_eligible}, state}
+        else
+          players =
+            Enum.map(state.players, fn
+              %Player{id: ^winner_id} = p -> %{p | bankroll: p.bankroll + amount}
+              p -> p
+            end)
+
+          if Enum.empty?(rest_pots) do
+            table = end_hand(%Table{state | players: players})
+            broadcast!(table)
+            {:reply, {:ok, table}, table}
+          else
+            hand = %Hand{state.hand | remaining_pots: rest_pots}
+            table = %Table{state | players: players, hand: hand}
+            broadcast!(table)
+            {:reply, {:ok, table}, table}
+          end
+        end
     end
   end
 end

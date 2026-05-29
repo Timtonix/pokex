@@ -81,6 +81,35 @@ defmodule Poker.TableManagerTest do
     player.id
   end
 
+  # Injecte un état de river connu avec bob all-in et alice/charlie actifs
+  defp inject_river_with_allin(table, bob_total_bet, others_total_bet) do
+    pot = bob_total_bet + others_total_bet * 2
+    alice_seat = Enum.find_index(table.players, &(&1.id == "alice"))
+
+    :sys.replace_state(TableManager, fn %Table{} = t ->
+      players =
+        Enum.map(t.players, fn
+          %Player{id: "alice"} = p -> %{p | bankroll: 10_000 - others_total_bet, status: :active}
+          %Player{id: "bob"} = p -> %{p | bankroll: 0, status: :all_in}
+          %Player{id: "charlie"} = p -> %{p | bankroll: 10_000 - others_total_bet, status: :active}
+        end)
+
+      hand = %{t.hand |
+        current_round: :river,
+        community_cards_count: 5,
+        pot: pot,
+        bets: %{},
+        total_bets: %{"alice" => others_total_bet, "bob" => bob_total_bet, "charlie" => others_total_bet},
+        last_raise: nil,
+        remaining_pots: [],
+        acted_seats: MapSet.new(),
+        current_player_seat: alice_seat
+      }
+
+      %{t | players: players, hand: hand}
+    end)
+  end
+
   # ---------------------------------------------------------------------------
   # BLOC 1 — Création de table
   # ---------------------------------------------------------------------------
@@ -357,7 +386,7 @@ defmodule Poker.TableManagerTest do
       table = ready_hand(3)
       hand = table.hand
       assert Map.has_key?(hand, :pot)
-      assert Map.has_key?(hand, :side_pots)
+      assert Map.has_key?(hand, :remaining_pots)
       assert Map.has_key?(hand, :current_round)
       assert Map.has_key?(hand, :current_player_seat)
       assert Map.has_key?(hand, :last_raise)
@@ -958,7 +987,7 @@ defmodule Poker.TableManagerTest do
 
     test "refus si le gagnant déclaré n'est pas à la table" do
       table = reach_showdown(3)
-      assert {:error, :player_not_found} = TableManager.declare_winner(gm_id(), "unknown_tag")
+      assert {:error, :player_not_eligible} = TableManager.declare_winner(gm_id(), "unknown_tag")
     end
 
     test "refus si appelé par un non-GM" do
@@ -980,100 +1009,63 @@ defmodule Poker.TableManagerTest do
 
   describe "side pots" do
     test "un side pot est créé quand un joueur est all-in avec moins que les autres" do
-      # bob: 200, charlie: 1000, alice: 10000
       {:ok, _} = TableManager.create_table(gm_id())
       {:ok, _} = TableManager.join_table("bob")
       {:ok, _} = TableManager.join_table("charlie")
-
-      :sys.replace_state(TableManager, fn %Table{} = t ->
-        players =
-          Enum.map(t.players, fn
-            %Player{id: "bob"} = p -> %{p | bankroll: 200}
-            p -> p
-          end)
-
-        %{t | players: players}
-      end)
-
       {:ok, _} = TableManager.start_game(gm_id())
       {:ok, table} = TableManager.new_hand(gm_id())
 
-      # Bob all-in pour 200
-      bob = find_player(table, "bob")
-      acting_id = current_player_id(table)
+      # bob all-in à 100, alice et charlie à 300 → side pot existe
+      inject_river_with_allin(table, 100, 300)
 
-      # On force bob à agir s'il n'est pas UTG
-      final_table =
-        if acting_id == "bob" do
-          {:ok, t} = TableManager.all_in("bob")
-          t
-        else
-          {:ok, t1} = TableManager.call(acting_id)
-          {:ok, t2} = TableManager.all_in("bob")
-          t2
-        end
+      {:ok, t1} = TableManager.check("alice")
+      {:ok, t2} = TableManager.check("charlie")
 
-      refute Enum.empty?(final_table.hand.side_pots)
+      assert t2.hand.current_round == :showdown
+      assert length(t2.hand.remaining_pots) >= 2
     end
 
     test "les side pots contiennent les joueurs éligibles" do
       {:ok, _} = TableManager.create_table(gm_id())
       {:ok, _} = TableManager.join_table("bob")
       {:ok, _} = TableManager.join_table("charlie")
-
-      :sys.replace_state(TableManager, fn %Table{} = t ->
-        players =
-          Enum.map(t.players, fn
-            %Player{id: "bob"} = p -> %{p | bankroll: 100}
-            p -> p
-          end)
-
-        %{t | players: players}
-      end)
-
       {:ok, _} = TableManager.start_game(gm_id())
       {:ok, table} = TableManager.new_hand(gm_id())
 
-      acting_id = current_player_id(table)
+      # bob all-in à 100, alice et charlie à 200
+      inject_river_with_allin(table, 100, 200)
 
-      if acting_id != "bob" do
-        {:ok, t} = TableManager.raise_bet(acting_id, 200)
-        {:ok, t2} = TableManager.all_in("bob")
-        # Le side pot de bob ne doit pas inclure les joueurs à qui il ne peut pas gagner
-        [{_amount, eligible_ids}] = t2.hand.side_pots
-        assert "bob" in eligible_ids
-      end
+      {:ok, t1} = TableManager.check("alice")
+      {:ok, t2} = TableManager.check("charlie")
+
+      assert t2.hand.current_round == :showdown
+      # bob est éligible au pot principal (il y a contribué)
+      main_pot = hd(t2.hand.remaining_pots)
+      {_amount, eligible_ids} = main_pot
+      assert "bob" in eligible_ids
+      # bob n'est pas éligible au side pot (il n'y a pas contribué)
+      side_pot = List.last(t2.hand.remaining_pots)
+      {_amount2, side_eligible} = side_pot
+      refute "bob" in side_eligible
     end
 
     test "le montant du pot principal est cappé au all-in du joueur le plus court" do
       {:ok, _} = TableManager.create_table(gm_id())
       {:ok, _} = TableManager.join_table("bob")
       {:ok, _} = TableManager.join_table("charlie")
-
-      :sys.replace_state(TableManager, fn %Table{} = t ->
-        players =
-          Enum.map(t.players, fn
-            %Player{id: "bob"} = p -> %{p | bankroll: 100}
-            p -> p
-          end)
-
-        %{t | players: players}
-      end)
-
       {:ok, _} = TableManager.start_game(gm_id())
       {:ok, table} = TableManager.new_hand(gm_id())
 
-      acting_id = current_player_id(table)
+      # bob all-in à 100, alice et charlie à 500
+      inject_river_with_allin(table, 100, 500)
 
-      if acting_id != "bob" do
-        {:ok, t} = TableManager.all_in(acting_id)
-        {:ok, t2} = TableManager.all_in("bob")
-        # Le side pot de bob ne peut pas dépasser 100 * nb_joueurs
-        bob_pot = Enum.find(t2.hand.side_pots, fn {_, eligible} -> "bob" in eligible end)
-        assert bob_pot != nil
-        {amount, _} = bob_pot
-        assert amount <= 100 * length(t2.players)
-      end
+      {:ok, t1} = TableManager.check("alice")
+      {:ok, t2} = TableManager.check("charlie")
+
+      assert t2.hand.current_round == :showdown
+      # Le pot auquel bob est éligible ne peut dépasser 100 × nb_joueurs
+      {bob_amount, _} = hd(t2.hand.remaining_pots)
+      assert bob_amount <= 100 * length(t2.players)
     end
 
     test "declare_winner avec side pots distribue correctement" do

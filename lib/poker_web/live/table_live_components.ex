@@ -8,10 +8,15 @@ defmodule PokerWeb.TableLiveComponents do
     <div class="w-full max-w-sm space-y-6">
     <!-- Affiche le POT, et le tour actuel -->
       <%= if @table.hand do %>
-        <div class="text-center">
-          <p class="text-zinc-400 text-sm">Pot</p>
-          <p class="text-2xl font-bold">{@table.hand.pot}</p>
-          <p class="text-zinc-500 text-xs mt-1">{round_label(@table.hand.current_round)}</p>
+        <div class="flex flex-col items-center gap-2">
+          <div class="text-center">
+            <p class="text-zinc-400 text-sm">Pot</p>
+            <p class="text-2xl font-bold">{@table.hand.pot}</p>
+          </div>
+          <.round_indicator
+            current_round={@table.hand.current_round}
+            community_cards_count={@table.hand.community_cards_count}
+          />
         </div>
       <%end %>
       <%!-- Liste des joueurs + bankroll --%>
@@ -40,10 +45,10 @@ defmodule PokerWeb.TableLiveComponents do
             </div>
             <div class="flex flex-col items-end">
               <span class="text-zinc-300 font-mono">{player.bankroll}</span>
-              <%= if player.id == @tag_id && @table.hand do %>
-                <% my_bet = Map.get(@table.hand.total_bets, player.id, 0) %>
-                <%= if my_bet > 0 do %>
-                  <span class="text-xs text-yellow-400 font-mono">misé: {my_bet}</span>
+              <%= if @table.hand do %>
+                <% round_bet = Map.get(@table.hand.bets, player.id, 0) %>
+                <%= if round_bet > 0 do %>
+                  <span class="text-xs text-yellow-400 font-mono">↑ {round_bet}</span>
                 <% end %>
               <% end %>
             </div>
@@ -158,13 +163,30 @@ defmodule PokerWeb.TableLiveComponents do
           Raise
         </button>
       </form>
-      <button
-        phx-click="action"
-        phx-value-type="all_in"
-        class="w-full bg-orange-800 hover:bg-orange-700 py-3 rounded-lg text-sm font-medium transition-colors"
-      >
-        All-in
-      </button>
+      <div>
+        <button
+          id="allin-btn"
+          phx-click={JS.hide(to: "#allin-btn") |> JS.show(to: "#allin-confirm", display: "flex")}
+          class="w-full bg-orange-800 hover:bg-orange-700 py-3 rounded-lg text-sm font-medium transition-colors"
+        >
+          All-in
+        </button>
+        <div id="allin-confirm" class="hidden gap-2">
+          <button
+            phx-click="action"
+            phx-value-type="all_in"
+            class="flex-1 bg-orange-600 hover:bg-orange-500 py-3 rounded-lg text-sm font-semibold transition-colors"
+          >
+            Confirmer all-in
+          </button>
+          <button
+            phx-click={JS.hide(to: "#allin-confirm") |> JS.show(to: "#allin-btn")}
+            class="px-4 py-3 rounded-lg text-sm bg-zinc-700 hover:bg-zinc-600 transition-colors"
+          >
+            Annuler
+          </button>
+        </div>
+      </div>
     </div>
     """
   end
@@ -217,14 +239,30 @@ defmodule PokerWeb.TableLiveComponents do
   end
 
   def gm_panel(%{table: %Table{status: :playing, hand: %{current_round: :showdown}}} = assigns) do
-    eligible = Enum.filter(assigns.table.players, &(&1.status not in [:folded, :out]))
+    [{amount, eligible_ids} | rest_pots] = assigns.table.hand.remaining_pots
 
-    assigns = assign(assigns, :eligible, eligible)
+    eligible_players =
+      Enum.filter(assigns.table.players, &(&1.id in eligible_ids))
+
+    assigns =
+      assigns
+      |> assign(:pot_amount, amount)
+      |> assign(:eligible_players, eligible_players)
+      |> assign(:side_pots_count, length(rest_pots))
 
     ~H"""
     <div class="border-t border-zinc-800 px-4 py-4 space-y-2">
-      <p class="text-xs text-zinc-500 text-center mb-3">Panel GM — Abattage</p>
-      <%= for player <- @eligible do %>
+      <p class="text-xs text-zinc-500 text-center mb-1">Panel GM — Abattage</p>
+      <div class="text-center mb-2">
+        <p class="text-xs text-zinc-400">
+          {if @side_pots_count > 0, do: "Pot principal", else: "Pot"}
+        </p>
+        <p class="text-xl font-bold">{@pot_amount}</p>
+        <%= if @side_pots_count > 0 do %>
+          <p class="text-xs text-zinc-500">{@side_pots_count} side pot(s) après</p>
+        <% end %>
+      </div>
+      <%= for player <- @eligible_players do %>
         <button
           phx-click="declare_winner"
           phx-value-winner={player.id}
@@ -368,10 +406,37 @@ defmodule PokerWeb.TableLiveComponents do
     """
   end
 
-  defp round_label(:preflop), do: "Préflop"
-  defp round_label(:flop), do: "Flop"
-  defp round_label(:turn), do: "Turn"
-  defp round_label(:river), do: "River"
-  defp round_label(:showdown), do: "Abattage"
-  defp round_label(_), do: ""
+  def round_indicator(assigns) do
+    steps = [{:preflop, "Pré"}, {:flop, "Flop"}, {:turn, "Turn"}, {:river, "River"}, {:showdown, "Abat."}]
+    current_idx = Enum.find_index(steps, fn {r, _} -> r == assigns.current_round end) || 0
+
+    assigns =
+      assigns
+      |> assign(:steps, Enum.with_index(steps))
+      |> assign(:current_idx, current_idx)
+
+    ~H"""
+    <div class="flex flex-col items-center gap-1">
+      <div class="flex items-end">
+        <%= for {{_round, label}, i} <- @steps do %>
+          <% active = i == @current_idx %>
+          <% past = i < @current_idx %>
+          <% dot = if active, do: "bg-indigo-400", else: if(past, do: "bg-zinc-500", else: "bg-zinc-700") %>
+          <% lbl = if active, do: "text-indigo-400 font-medium", else: if(past, do: "text-zinc-500", else: "text-zinc-700") %>
+          <div class="flex flex-col items-center">
+            <div class={"w-2.5 h-2.5 rounded-full " <> dot} />
+            <span class={"text-[10px] mt-0.5 " <> lbl}>{label}</span>
+          </div>
+          <%= if i < 4 do %>
+            <div class={"w-5 h-px mb-4 " <> if(past, do: "bg-zinc-500", else: "bg-zinc-700")} />
+          <% end %>
+        <% end %>
+      </div>
+      <p class="text-xs text-zinc-500">{cards_label(@community_cards_count)}</p>
+    </div>
+    """
+  end
+
+  defp cards_label(0), do: "Aucune carte retournée"
+  defp cards_label(n), do: "#{n} cartes retournées"
 end
